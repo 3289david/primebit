@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrimeBIT 관리자</title>
+<style>
+  :root { --bg:#0f1420; --card:#171e2e; --line:#26304a; --tx:#e6ebf5; --mut:#8c97b2; --pri:#2b6df6; --ok:#2ecc71; --bad:#e74c3c; --warn:#f1c40f; }
+  * { box-sizing:border-box }
+  body { margin:0; font:14px/1.5 system-ui,'Malgun Gothic',sans-serif; background:var(--bg); color:var(--tx) }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; flex-wrap:wrap }
+  header h1 { font-size:18px; margin:0 12px 0 0 }
+  nav button { background:none; border:0; color:var(--mut); padding:8px 12px; cursor:pointer; font-size:14px; border-radius:8px }
+  nav button.on { background:var(--card); color:var(--tx) }
+  main { padding:20px; max-width:1300px; margin:auto }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin-bottom:20px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px }
+  .card .k { color:var(--mut); font-size:12px } .card .v { font-size:22px; font-weight:700; margin-top:2px }
+  .warnv { color:var(--warn) } .badv { color:var(--bad) }
+  table { width:100%; border-collapse:collapse; background:var(--card); border-radius:12px; overflow:hidden }
+  th,td { padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; max-width:340px; overflow:hidden; text-overflow:ellipsis }
+  th { color:var(--mut); font-weight:500; font-size:12px }
+  .scroll { overflow-x:auto }
+  button.b, select, input { background:#0c111c; color:var(--tx); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font:inherit }
+  a.b { color:var(--tx); display:inline-block }
+  button.b { cursor:pointer } button.b:hover { border-color:var(--pri) }
+  .b.pri { background:var(--pri); border-color:var(--pri) } button.red { color:var(--bad) }
+  .bar { display:flex; gap:8px; margin-bottom:12px; align-items:center }
+  .tag { padding:2px 8px; border-radius:20px; font-size:12px; background:#26304a }
+  .tag.done,.tag.matched { background:#1d4d33; color:var(--ok) } .tag.error,.tag.unmatched { background:#552626; color:var(--bad) }
+  .tag.pending,.tag.sending,.tag.open { background:#4d4420; color:var(--warn) }
+  form.set { display:grid; grid-template-columns:200px 1fr; gap:10px; max-width:600px; align-items:center }
+  #login { max-width:320px; margin:20vh auto; display:flex; flex-direction:column; gap:10px }
+  .hide { display:none !important }
+</style>
+</head>
+<body>
+<div id="login" class="card hide">
+  <h2 style="margin:0">PrimeBIT 관리자</h2>
+  <div style="color:var(--mut)">허용된 디스코드 계정으로만 로그인할 수 있습니다.</div>
+  <a class="b pri" style="text-decoration:none;text-align:center;padding:10px" href="/admin/login/discord">Discord로 로그인</a>
+  <div id="lerr" class="badv"></div>
+</div>
+
+<div id="app" class="hide">
+  <header>
+    <h1>💱 PrimeBIT 관리자</h1>
+    <nav id="nav"></nav>
+    <span style="margin-left:auto;color:var(--mut)" id="me"></span>
+    <button class="b" onclick="logout()">로그아웃</button>
+  </header>
+  <main id="main"></main>
+</div>
+
+<script>
+const TABS = { dashboard:'대시보드', wallets:'재고/지갑', charges:'충전', deposits:'입금내역', orders:'코인 주문', sells:'매입 신청', users:'유저', log:'포인트 로그', audit:'감사 로그', settings:'설정' };
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtT = (ms) => ms ? new Date(ms).toLocaleString('ko-KR', {hour12:false}) : '';
+const n = (x) => Number(x||0).toLocaleString('ko-KR');
+let tab = 'dashboard', timer;
+
+async function api(path, method='GET', body) {
+  const r = await fetch('/admin/api' + path, { method, headers: {'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { showLogin(); throw new Error('login'); }
+  const d = await r.json();
+  if (!r.ok) { alert(d.error || '오류'); throw new Error(d.error); }
+  return d;
+}
+function showLogin() { $('#app').classList.add('hide'); $('#login').classList.remove('hide'); }
+async function logout() {
+  await fetch('/admin/logout', { method:'POST' });
+  location.href = '/admin';
+}
+
+async function init() {
+  $('#login').classList.add('hide'); $('#app').classList.remove('hide');
+  api('/me').then((u) => { $('#me').textContent = '👤 ' + u.name; });
+  $('#nav').innerHTML = Object.entries(TABS).map(([k,v]) => `<button data-t="${k}" onclick="go('${k}')">${v}</button>`).join('');
+  go(tab);
+}
+function go(t) {
+  tab = t;
+  document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
+  clearInterval(timer);
+  render();
+  if (t !== 'settings') timer = setInterval(render, 10000);
+}
+
+function table(cols, rows, actions) {
+  const head = cols.map((c) => `<th>${c[1]}</th>`).join('') + (actions ? '<th></th>' : '');
+  const body = rows.map((r) => '<tr>' + cols.map(([k,,f]) => {
+    const v = f ? f(r[k], r) : esc(r[k]);
+    return `<td title="${esc(r[k])}">${v}</td>`;
+  }).join('') + (actions ? `<td>${actions(r)}</td>` : '') + '</tr>').join('');
+  return `<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${body || '<tr><td colspan="99" style="color:var(--mut)">내역 없음</td></tr>'}</tbody></table></div>`;
+}
+const tag = (v) => `<span class="tag ${esc(v)}">${esc(v)}</span>`;
+const mention = (v) => `<span title="디스코드 ID">${esc(v)}</span>`;
+const statusBar = (opts) => `<div class="bar"><select id="st" onchange="render()">${opts.map((o) => `<option value="${o}">${o || '전체'}</option>`).join('')}</select></div>`;
+const stVal = () => ($('#st') ? $('#st').value : '');
+
+async function render() {
+  const m = $('#main');
+  if (tab === 'dashboard') {
+    const d = await api('/dashboard');
+    const c = (k, v, cls='') => `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+    const maxVol = Math.max(1, ...d.week.map((w) => w.vol));
+    m.innerHTML = (d.maintenance ? '<div class="card badv" style="margin-bottom:12px">🛠️ 점검 모드 ON — 충전/구매가 차단되어 있습니다.</div>' : '') + `<div class="grid">
+      ${c('총 재고 가치', n(d.stockValue) + '원')}${c('판매 중인 코인', d.sellingCoins + '종', d.sellingCoins ? '' : 'badv')}
+      ${c('USD/KRW', n(d.rates.usdkrw))}${c('김프(BTC)', d.rates.kimp == null ? '-' : d.rates.kimp.toFixed(2) + '%')}
+      ${c('오늘 충전액', n(d.chargedToday) + '원')}${c('오늘 수수료 수익', n(d.feeToday) + 'P')}
+      ${c('누적 수수료 수익', n(d.feeTotal) + 'P')}${c('유저 수 / 보유 포인트', n(d.users.n) + ' / ' + n(d.users.pts) + 'P')}
+      ${c('미매칭 입금', d.unmatched, d.unmatched ? 'badv' : '')}${c('전송 오류 주문', d.errorOrders, d.errorOrders ? 'badv' : '')}
+      ${c('블록 확인 중', d.confirming)}${c('처리 대기 매입신청', d.openSells, d.openSells ? 'warnv' : '')}</div>
+      <div class="card" style="margin-bottom:12px"><div class="k">최근 7일 구매 (포인트 사용량)</div>
+        ${d.week.map((w) => `<div style="display:flex;gap:8px;align-items:center;margin-top:6px"><span style="width:90px;color:var(--mut)">${w.d}</span><div style="background:var(--pri);height:14px;border-radius:4px;width:${Math.max(2, w.vol / maxVol * 100)}%"></div><span>${n(w.vol)}P · ${w.n}건 · 수수료 ${n(w.fee)}P</span></div>`).join('') || '<div style="color:var(--mut)">데이터 없음</div>'}</div>
+      <div class="bar">
+        <button class="b ${d.maintenance ? 'pri' : 'red'}" onclick="act('/maintenance',{on:${!d.maintenance}})">${d.maintenance ? '점검 해제' : '점검 모드 켜기'}</button>
+        <button class="b" onclick="sendNotice()">📢 디스코드 공지 보내기</button>
+        <a class="b" style="text-decoration:none;padding:6px 10px" href="/admin/api/export/charges.csv">충전 CSV</a>
+        <a class="b" style="text-decoration:none;padding:6px 10px" href="/admin/api/export/orders.csv">주문 CSV</a>
+        <a class="b" style="text-decoration:none;padding:6px 10px" href="/admin/api/export/point_log.csv">포인트로그 CSV</a>
+      </div>`;
+  }
+  if (tab === 'wallets') {
+    const chains = await api('/wallets');
+    const stTag = { ok:['정상','done'], low:['부족','pending'], soldout:['품절','error'], nokey:['키 미설정',''], error:['조회 오류','error'], unknown:['-',''] };
+    const copy = (t) => `<button class="b" onclick="navigator.clipboard.writeText('${esc(t)}').then(()=>this.textContent='복사됨')">복사</button>`;
+    const fmtN = (x, d=4) => x == null ? '-' : Number(x).toLocaleString('ko-KR', {maximumFractionDigits: x >= 100 ? 0 : d});
+    m.innerHTML = '<div class="card" style="margin-bottom:12px">각 체인의 <b>핫월렛 주소</b>로 해당 네트워크의 코인을 보내면 재고가 충전됩니다. 수수료용 네이티브 코인(가스)도 함께 채워두세요. <b>다른 네트워크로 보내면 복구할 수 없습니다.</b></div>' + chains.map((ch) => {
+      const gas = ch.gas;
+      const gasTxt = !ch.configured ? '-' : gas && gas.error ? `<span class="badv">조회 오류</span>` : `<span class="${ch.gasLow ? 'badv' : ''}">${fmtN(gas, 6)} ${ch.native}${ch.gasLow ? ' ⚠️ 부족 (권장 ' + ch.gasWarn + '+)' : ''}</span>`;
+      return `<div class="card" style="margin-bottom:12px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+          <b style="font-size:16px">${esc(ch.name)}</b><span class="tag">확정 ${ch.confirmations}컨펌</span>
+          <span style="color:var(--mut)">수수료(가스) 잔액: ${gasTxt}</span></div>
+        ${ch.configured ? `<div style="margin-bottom:10px"><span style="color:var(--mut)">충전 주소 </span><code style="user-select:all;word-break:break-all">${esc(ch.address)}</code> ${copy(ch.address)}</div>`
+          : `<div class="warnv" style="margin-bottom:10px">핫월렛 키 미설정 — .env 의 <code>${esc(ch.keyEnv)}</code> 를 설정하면 이 체인의 코인이 활성화됩니다.</div>`}
+        ${table([
+          ['key','코인'],
+          ['stock','재고',(v,r)=>fmtN(v) + ' ' + esc(r.symbol)],
+          ['price','시세',(v)=>v?n(v)+'원':'-'],
+          ['valueKrw','재고 가치',(v)=>v==null?'-':n(v)+'원'],
+          ['state','상태',(v,r)=>`<span class="tag ${stTag[v][1]}" title="${esc(r.error||'')}">${stTag[v][0]}</span>`],
+          ['needCoin','보충 권장 수량',(v,r)=>!ch.configured||v==null?'-':v>0?`<b>${fmtN(v)} ${esc(r.symbol)}</b> (≈${n(r.needKrw)}원)`:'충분'],
+          ['contract','컨트랙트',(v)=>v?`<span title="${esc(v)}">${esc(v.slice(0,6))}…${esc(v.slice(-4))}</span> ${copy(v)}`:'네이티브'],
+        ], ch.coins, (r) => ch.configured ? `<button class="b ${r.enabled?'':'red'}" onclick="act('/coins/${r.key}/enabled',{enabled:${!r.enabled}})">${r.enabled?'판매 중 (중지)':'중지됨 (재개)'}</button>` : '')}
+      </div>`;
+    }).join('');
+  }
+  if (tab === 'charges') {
+    const keep = stVal();
+    const rows = await api('/list/charges?status=' + keep);
+    m.innerHTML = statusBar(['', 'pending', 'done', 'expired', 'cancelled']) + table(
+      [['id','#'],['discord_id','유저',mention],['depositor','입금자명'],['amount','금액',(v)=>n(v)],['status','상태',tag],['created_at','신청',fmtT],['done_at','완료',fmtT]],
+      rows, (r) => r.status === 'pending' ? `<button class="b red" onclick="act('/charges/${r.id}/cancel')">취소</button>` : '');
+    $('#st').value = keep;
+  }
+  if (tab === 'deposits') {
+    const keep = stVal();
+    const rows = await api('/list/deposits?status=' + keep);
+    m.innerHTML = statusBar(['', 'unmatched', 'matched', 'duplicate', 'ignored']) + table(
+      [['id','#'],['amount','금액',(v)=>n(v)],['status','상태',tag],['charge_id','충전#'],['raw','문자/알림 원문'],['received_at','수신',fmtT]],
+      rows, (r) => r.status === 'unmatched'
+        ? `<button class="b pri" onclick="matchDep(${r.id})">충전과 매칭</button> <button class="b" onclick="act('/deposits/${r.id}/ignore')">무시</button>` : '');
+    $('#st').value = keep;
+  }
+  if (tab === 'orders') {
+    const keep = stVal();
+    const rows = await api('/list/orders?status=' + keep);
+    m.innerHTML = statusBar(['', 'sending', 'confirming', 'done', 'error', 'refunded']) + table(
+      [['id','#'],['discord_id','유저',mention],['coin','코인'],['coin_amount','수량'],['points_used','사용P',(v)=>n(v)],['fee','수수료',(v)=>n(v)],['price','시세',(v)=>n(v)],['status','상태',tag],['note','진행'],['address','주소'],['txid','TXID',(v,r)=>v?(r.explorer?`<a style="color:var(--pri)" target="_blank" rel="noopener" href="${esc(r.explorer)}">${esc(v.slice(0,12))}…</a>`:esc(v)):''],['error','오류'],['created_at','시간',fmtT]],
+      rows, (r) => r.status === 'error'
+        ? `<button class="b pri" onclick="if(confirm('온체인에서 이 주문이 전송되지 않았음을 확인했습니까?')) act('/orders/${r.id}/retry')">재전송</button> <button class="b red" onclick="if(confirm('포인트를 환불합니다. 온체인 미전송을 확인했습니까?')) act('/orders/${r.id}/refund')">환불</button>` : '');
+    $('#st').value = keep;
+  }
+  if (tab === 'sells') {
+    const keep = stVal();
+    const rows = await api('/list/sells?status=' + keep);
+    m.innerHTML = statusBar(['', 'open', 'done', 'rejected']) + table(
+      [['id','#'],['discord_id','유저',mention],['coin','코인'],['amount','수량'],['bank_info','입금계좌'],['status','상태',tag],['memo','메모'],['created_at','신청',fmtT]],
+      rows, (r) => r.status === 'open'
+        ? `<button class="b pri" onclick="sellDone(${r.id},'done')">완료</button> <button class="b red" onclick="sellDone(${r.id},'rejected')">거절</button>` : '');
+    $('#st').value = keep;
+  }
+  if (tab === 'users') {
+    const rows = await api('/list/users');
+    m.innerHTML = table(
+      [['discord_id','디스코드 ID'],['points','포인트',(v)=>n(v)],['total_charged','누적충전',(v)=>n(v)],['total_spent','누적사용',(v)=>n(v)],['banned','차단',(v)=>v?'🚫':''],['created_at','가입',fmtT]],
+      rows, (r) => `<button class="b" onclick="adjust('${r.discord_id}')">포인트 조정</button> <button class="b ${r.banned?'':'red'}" onclick="act('/users/${r.discord_id}/ban',{banned:${r.banned?false:true}})">${r.banned?'차단 해제':'차단'}</button>`);
+  }
+  if (tab === 'log') {
+    const rows = await api('/list/log');
+    m.innerHTML = table([['id','#'],['discord_id','유저'],['delta','변동',(v)=>(v>0?'+':'')+n(v)],['reason','사유'],['ref','참조'],['created_at','시간',fmtT]], rows);
+  }
+  if (tab === 'audit') {
+    const rows = await api('/list/audit');
+    m.innerHTML = table([['id','#'],['admin_name','관리자'],['admin_id','디스코드 ID'],['action','작업'],['detail','내용'],['created_at','시간',fmtT]], rows);
+  }
+  if (tab === 'settings') {
+    if (m.dataset.loaded === 'settings') return;
+    const s = await api('/settings');
+    const labels = { fee_rate:'수수료율 (0.03 = 3%)', bank_name:'입금 은행', bank_account:'입금 계좌번호', bank_holder:'예금주', charge_min:'최소 충전액(원)', charge_max:'최대 충전액(원)', buy_min:'최소 구매 포인트', charge_expire_min:'충전 유효시간(분)', daily_limit_krw:'1인 1일 구매 한도(원, 0=무제한)', stock_alert_krw:'재고 부족 알림 기준(코인별 재고 가치, 원)', stock_target_krw:'보충 목표 재고 가치(원)', price_markup:'시세 가산율 (0.00 = 업비트 시세)', maintenance_msg:'점검 안내 문구' };
+    m.innerHTML = '<form class="set" onsubmit="saveSettings(event)">' + Object.entries(labels).map(([k,l]) => `<label>${l}</label><input name="${k}" value="${esc(s[k])}">`).join('') + '<span></span><button class="b pri">저장</button></form>';
+    m.dataset.loaded = 'settings';
+  } else { m.dataset.loaded = ''; }
+}
+
+async function sendNotice() {
+  const text = prompt('디스코드 알림 채널로 보낼 공지 내용');
+  if (text) { await api('/notice', 'POST', { text }); alert('전송했습니다.'); }
+}
+async function act(path, body) { await api(path, 'POST', body || {}); render(); }
+async function matchDep(id) {
+  const chargeId = prompt('매칭할 충전 요청 번호(#)를 입력하세요 (충전 탭에서 확인)');
+  if (chargeId) { await api(`/deposits/${id}/match`, 'POST', { chargeId: Number(chargeId) }); render(); }
+}
+async function sellDone(id, status) {
+  const memo = prompt(status === 'done' ? '완료 메모 (선택)' : '거절 사유');
+  if (memo === null) return;
+  await api('/sells/' + id, 'POST', { status, memo }); render();
+}
+async function adjust(id) {
+  const delta = prompt('조정할 포인트 (차감은 음수, 예: -5000)');
+  if (!delta) return;
+  const memo = prompt('사유') || '';
+  await api(`/users/${id}/points`, 'POST', { delta: Number(delta), memo }); render();
+}
+async function saveSettings(e) {
+  e.preventDefault();
+  await api('/settings', 'PUT', Object.fromEntries(new FormData(e.target)));
+  alert('저장되었습니다.');
+}
+
+const loginErr = new URLSearchParams(location.search).get('error');
+if (loginErr) history.replaceState(null, '', '/admin');
+api('/me').then(init).catch(() => { showLogin(); if (loginErr) $('#lerr').textContent = loginErr; });
+</script>
+</body>
+</html>

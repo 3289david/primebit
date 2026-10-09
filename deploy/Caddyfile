@@ -1,0 +1,6 @@
+# Caddy 가 HTTPS 인증서를 자동 발급/갱신합니다.
+# 사전 준비: primebit.krl.kr 의 DNS A 레코드를 이 서버 IP 로 지정, 80/443 포트 개방
+primebit.krl.kr {
+	encode gzip
+	reverse_proxy localhost:3000
+}

@@ -1,0 +1,29 @@
+﻿{
+  "name": "primebit",
+  "version": "1.0.0",
+  "description": "PrimeBIT 코인 환전소 디스코드 봇",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "test": "node --test test/*.test.js",
+    "check:chains": "node --env-file-if-exists=.env scripts/check-chains.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.4.15",
+    "@solana/web3.js": "^1.99.0",
+    "bitcoinjs-lib": "^7.0.2",
+    "bs58": "^6.0.0",
+    "discord.js": "^14.16.3",
+    "ecpair": "^3.0.2",
+    "ethers": "^6.17.0",
+    "express": "^4.21.1",
+    "tiny-secp256k1": "^2.2.4",
+    "tronweb": "^6.0.0",
+    "xrpl": "^5.3.0"
+  }
+}
+

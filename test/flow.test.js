@@ -13,6 +13,7 @@ const { rates } = await import('../src/services/rates.js');
 const { ensureUser } = await import('../src/services/points.js');
 const { setAdapter, enabledCoins, walletReport } = await import('../src/services/wallet.js');
 const { bus } = await import('../src/util.js');
+const { submitKyc, reviewKyc } = await import('../src/services/verify.js');
 
 // 테스트용 TRON 어댑터 스텁
 let txState = { state: 'pending', detail: '블록 대기' };
@@ -31,6 +32,13 @@ rates.upbit.USDT = 1400;
 rates.updatedAt = Date.now();
 const U = '111';
 const ADDR = 'TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE';
+
+// 테스트 유저는 본인인증+KYC가 끝난 상태로 가정 (charge/buy는 이제 assertVerified를 통과해야 함)
+const verify = (id) => {
+  ensureUser(id);
+  db.prepare("UPDATE users SET phone_verified=1, phone_number='01000000000', kyc_status='approved' WHERE discord_id=?").run(id);
+};
+for (const id of [U, '222', '333', '444']) verify(id);
 
 test('금액 파싱: 잔액 숫자는 무시', () => {
   assert.equal(parseAmount('[KB]10/09 12:30 123456**789 홍길동 입금 100,000원 잔액 5,000,000원'), 100000);
@@ -144,4 +152,30 @@ test('관리자 지갑 리포트: 충전 주소·재고·보충 필요 수량', 
   assert.equal(usdt.state, 'ok');
   assert.ok(usdt.needCoin > 0); // 목표 1천만원 대비 보충 필요
   assert.equal(rep.find((c) => c.chain === 'btc').configured, false);
+});
+
+test('본인인증/KYC 미완료 유저는 충전·구매 차단, 승인 후 통과 / 반려 후 다시 차단', async () => {
+  ensureUser('555');
+  assert.throws(() => createCharge('555', '미인증', 10000), /본인인증/);
+  db.prepare("UPDATE users SET phone_verified=1, phone_number='01099998888' WHERE discord_id='555'").run();
+  assert.throws(() => createCharge('555', '미인증', 10000), /KYC/);
+
+  submitKyc('555', { name: '김검증', dob: '19900101' }, 'chan-1');
+  assert.equal(ensureUser('555').kyc_status, 'pending');
+  assert.throws(() => createCharge('555', '미인증', 10000), /KYC/);
+
+  let dmed = null;
+  const off = (p) => (dmed = p);
+  bus.on('notify_user', off);
+  reviewKyc('555', false, '사진 불명확', 'admin-tester');
+  bus.off('notify_user', off);
+  assert.equal(ensureUser('555').kyc_status, 'rejected');
+  assert.match(dmed.content, /반려/);
+  assert.throws(() => createCharge('555', '미인증', 10000), /KYC/);
+
+  submitKyc('555', { name: '김검증', dob: '19900101' }, 'chan-2');
+  reviewKyc('555', true, null, 'admin-tester');
+  assert.equal(ensureUser('555').kyc_status, 'approved');
+  const c = createCharge('555', '미인증', 10000);
+  assert.equal(c.status, 'pending');
 });

@@ -113,7 +113,20 @@ export function tx(fn) {
 }
 
 // 이전 버전 DB 호환 (이미 있으면 무시)
-for (const sql of ['ALTER TABLE orders ADD COLUMN sent_at INTEGER', 'ALTER TABLE orders ADD COLUMN note TEXT']) {
+for (const sql of [
+  'ALTER TABLE orders ADD COLUMN sent_at INTEGER', 'ALTER TABLE orders ADD COLUMN note TEXT',
+  // 본인인증(휴대폰) / KYC(신원 증빙, 관리자 수동 승인)
+  'ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN phone_number TEXT',
+  "ALTER TABLE users ADD COLUMN kyc_status TEXT NOT NULL DEFAULT 'none'", // none | pending | approved | rejected
+  'ALTER TABLE users ADD COLUMN kyc_name TEXT',
+  'ALTER TABLE users ADD COLUMN kyc_dob TEXT',
+  'ALTER TABLE users ADD COLUMN kyc_memo TEXT',
+  'ALTER TABLE users ADD COLUMN kyc_channel_id TEXT',
+  'ALTER TABLE users ADD COLUMN kyc_submitted_at INTEGER',
+  'ALTER TABLE users ADD COLUMN kyc_reviewed_at INTEGER',
+  'ALTER TABLE users ADD COLUMN kyc_reviewer TEXT',
+]) {
   try { db.exec(sql); } catch { /* 이미 존재 */ }
 }
 

@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
 import { db, tx, now, numSetting } from '../db.js';
-import { addPoints, assertNotBanned, assertOpen } from './points.js';
+import { addPoints, assertNotBanned, assertOpen, assertVerified } from './points.js';
 import { UserError, bus } from '../util.js';
 
 export function createCharge(userId, depositor, amount) {
   assertOpen();
   assertNotBanned(userId);
+  assertVerified(userId);
   const min = numSetting('charge_min');
   const max = numSetting('charge_max');
   depositor = String(depositor).trim().replace(/\s+/g, '');

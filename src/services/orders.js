@@ -1,6 +1,6 @@
 import { db, tx, now, numSetting } from '../db.js';
 import { COINS } from '../config.js';
-import { addPoints, assertNotBanned, assertOpen } from './points.js';
+import { addPoints, assertNotBanned, assertOpen, assertVerified } from './points.js';
 import { getPrice } from './rates.js';
 import { getStock, isValidAddress, isOwnAddress, isEnabled, sendCoin, checkTx } from './wallet.js';
 import { UserError, bus } from '../util.js';
@@ -28,6 +28,7 @@ export function makeQuote(coin, points) {
 export async function precheckBuy(userId, coin, address, points) {
   assertOpen();
   assertNotBanned(userId);
+  assertVerified(userId);
   if (!isEnabled(coin)) throw new UserError('현재 판매하지 않는 코인입니다.');
   address = String(address).trim();
   if (!isValidAddress(coin, address)) throw new UserError(`올바른 ${COINS[coin].label.split('·').at(-1).trim()} 지갑 주소가 아닙니다. 네트워크를 다시 확인해주세요.`);

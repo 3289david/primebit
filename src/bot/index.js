@@ -1,15 +1,16 @@
 import crypto from 'node:crypto';
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Client, EmbedBuilder, Events, GatewayIntentBits,
+  ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ChannelType, Client, EmbedBuilder, Events, GatewayIntentBits,
   MessageFlags, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder, StringSelectMenuBuilder,
   TextInputBuilder, TextInputStyle,
 } from 'discord.js';
-import { config, COINS, CHAINS, COLOR, explorerUrl } from '../config.js';
-import { db, getSetting, numSetting, now } from '../db.js';
+import { config, COINS, CHAINS, COLOR, BRAND, explorerUrl } from '../config.js';
+import { db, getSetting, setSetting, numSetting, now } from '../db.js';
 import { ensureUser, assertNotBanned, assertOpen } from '../services/points.js';
 import { createCharge, cancelCharge } from '../services/charges.js';
 import { makeQuote, placeOrder, precheckBuy } from '../services/orders.js';
 import { enabledCoins } from '../services/wallet.js';
+import { startPhoneVerify, confirmPhoneVerify, submitKyc, reviewKyc } from '../services/verify.js';
 import { UserError, bus, krw, pts, fmtTime, fmtCoin, parseInt0, maskName } from '../util.js';
 import {
   mainPanelPayload, refreshStatusMessage, setupStatusChannel, setupVoiceBoard, refreshVoiceBoard, checkStockAlerts,
@@ -23,11 +24,23 @@ export const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const commands = [
   new SlashCommandBuilder()
     .setName('setup')
-    .setDescription('PrimeBIT 설정 (관리자)')
+    .setDescription(`${BRAND} 설정 (관리자)`)
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((s) => s.setName('panel').setDescription('현재 채널에 메인 패널 설치'))
     .addSubcommand((s) => s.setName('status').setDescription('현재 채널에 실시간 현황 메시지 설치'))
     .addSubcommand((s) => s.setName('voice').setDescription('음성채널 시세판(환율/김프/재고) 생성'))
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('관리자')
+    .setDescription('긴급 관리 명령 (관리자, 어디서든 바로 실행)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand((s) => s.setName('점검모드')
+      .setDescription('충전/구매를 즉시 막거나 해제')
+      .addStringOption((o) => o.setName('상태').setDescription('on/off').setRequired(true)
+        .addChoices({ name: 'ON (점검 시작)', value: 'on' }, { name: 'OFF (점검 해제)', value: 'off' })))
+    .addSubcommand((s) => s.setName('공지')
+      .setDescription('공지 채널에 즉시 방송')
+      .addStringOption((o) => o.setName('내용').setDescription('공지 내용').setRequired(true).setMaxLength(1500)))
     .toJSON(),
 ];
 
@@ -91,6 +104,29 @@ async function onButton(i) {
   if (kind === 'sell') {
     assertNotBanned(i.user.id);
     return i.reply({ flags: EPH, content: '매입(판매) 신청할 코인을 선택하세요.', components: [coinSelect('sell_coin', Object.keys(COINS))] });
+  }
+  if (kind === 'verify') return startVerify(i);
+  if (kind === 'verify_confirm') {
+    const mobileNum = await confirmPhoneVerify(i.user.id);
+    return i.reply({
+      flags: EPH,
+      content: `✅ 휴대폰 인증이 완료되었습니다 (${mobileNum}).\nKYC 인증을 위해 "본인인증" 버튼을 한 번 더 눌러 증빙자료를 제출해주세요.`,
+    });
+  }
+  if (kind === 'kyc_approve') {
+    if (!isAdmin(i)) return i.reply({ flags: EPH, content: '관리자만 사용할 수 있습니다.' });
+    reviewKyc(arg, true, null, i.user.username);
+    db.prepare('INSERT INTO audit(admin_id,admin_name,action,detail,created_at) VALUES(?,?,?,?,?)').run(i.user.id, i.user.username, 'kyc_approve', arg, now());
+    await i.update({ content: `✅ <@${i.user.id}> 님이 승인했습니다.`, embeds: i.message.embeds, components: [] });
+    return;
+  }
+  if (kind === 'kyc_reject') {
+    if (!isAdmin(i)) return i.reply({ flags: EPH, content: '관리자만 사용할 수 있습니다.' });
+    return i.showModal(
+      new ModalBuilder().setCustomId(`kyc_reject:${arg}`).setTitle('KYC 반려').addComponents(
+        input('memo', '반려 사유 (유저에게 전달됩니다)', '서류 사진이 불명확함', TextInputStyle.Paragraph, 300),
+      ),
+    );
   }
   if (kind === 'me') return showMe(i);
   if (kind === 'history') return showHistory(i);
@@ -272,9 +308,107 @@ async function onModal(i) {
       content: `📥 매입 신청 **#${r.lastInsertRowid}** 이(가) 접수되었습니다. 관리자가 확인 후 DM/티켓으로 안내드립니다.\n(안내 전에는 코인을 먼저 보내지 마세요.)`,
     });
   }
+
+  if (kind === 'verify_phone') {
+    const { code, mobileNum, target } = startPhoneVerify(i.user.id, i.fields.getTextInputValue('mobile'));
+    await i.deferReply({ flags: EPH });
+    let qrFile = null;
+    try {
+      const res = await fetch('https://api.octoverse.kr/octomo/v1/public/message/qr-code', {
+        method: 'POST',
+        headers: { Authorization: `Octomo ${config.octomoApiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ text: code }),
+      });
+      if (res.ok) {
+        const { qrCode } = await res.json();
+        qrFile = new AttachmentBuilder(Buffer.from(qrCode.split(',')[1], 'base64'), { name: 'verify-qr.png' });
+      }
+    } catch { /* QR 발급 실패해도 링크 버튼으로 계속 진행 가능 */ }
+    const embed = new EmbedBuilder()
+      .setColor(COLOR)
+      .setTitle('📱 휴대폰 본인인증')
+      .setDescription([
+        `아래 번호로 **인증코드**를 문자로 보내주세요. (5분 이내, ${mobileNum})`,
+        '',
+        `**받는 번호**: \`${target}\``,
+        `**인증코드**: \`${code}\``,
+        '',
+        '"문자 보내기" 버튼을 누르면 문자 앱이 코드가 채워진 채로 열립니다. (PC로 보고 있다면 QR을 폰 카메라로 스캔하세요)',
+        '문자 전송 후 "인증 확인" 버튼을 눌러주세요.',
+      ].join('\n'));
+    if (qrFile) embed.setImage('attachment://verify-qr.png');
+    return i.editReply({
+      embeds: [embed],
+      files: qrFile ? [qrFile] : [],
+      components: [row(
+        new ButtonBuilder().setLabel('문자 보내기').setEmoji('✉️').setStyle(ButtonStyle.Link).setURL(`sms:${target.replace(/-/g, '')}?body=${encodeURIComponent(code)}`),
+        new ButtonBuilder().setCustomId('verify_confirm').setLabel('인증 확인').setEmoji('✅').setStyle(ButtonStyle.Success),
+      )],
+    });
+  }
+
+  if (kind === 'kyc_submit') {
+    const name = i.fields.getTextInputValue('name');
+    const dob = i.fields.getTextInputValue('dob');
+    await i.deferReply({ flags: EPH });
+    const allow = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles];
+    const overwrites = [
+      { id: i.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: i.user.id, allow },
+      { id: client.user.id, allow },
+    ];
+    if (config.adminRoleId) overwrites.push({ id: config.adminRoleId, allow });
+    const ch = await i.guild.channels.create({
+      name: `kyc-${i.user.username}`.replace(/[^a-z0-9가-힣-]/gi, '-').slice(0, 90),
+      type: ChannelType.GuildText,
+      parent: config.ticketCategoryId || undefined,
+      permissionOverwrites: overwrites,
+    });
+    submitKyc(i.user.id, { name, dob }, ch.id);
+    await ch.send({
+      content: `<@${i.user.id}>${config.adminRoleId ? ` <@&${config.adminRoleId}>` : ''}`,
+      embeds: [new EmbedBuilder().setColor(COLOR).setTitle('🪪 KYC 증빙자료 제출').setDescription(
+        `**실명**: ${name}\n**생년월일**: ${dob}\n\n본인 확인이 가능한 신분증 사진을 이 채널에 첨부해주세요. 관리자가 확인 후 승인/반려 처리합니다.`,
+      )],
+      components: [row(
+        new ButtonBuilder().setCustomId(`kyc_approve:${i.user.id}`).setLabel('승인').setEmoji('✅').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`kyc_reject:${i.user.id}`).setLabel('반려').setEmoji('❌').setStyle(ButtonStyle.Danger),
+      )],
+    });
+    return i.editReply({ content: `📨 KYC 신청이 접수되었습니다: <#${ch.id}>\n해당 채널에 신분증 사진을 첨부해주세요.` });
+  }
+
+  if (kind === 'kyc_reject') {
+    if (!isAdmin(i)) return i.reply({ flags: EPH, content: '관리자만 사용할 수 있습니다.' });
+    const memo = i.fields.getTextInputValue('memo');
+    reviewKyc(arg, false, memo, i.user.username);
+    db.prepare('INSERT INTO audit(admin_id,admin_name,action,detail,created_at) VALUES(?,?,?,?,?)').run(i.user.id, i.user.username, 'kyc_reject', `${arg}: ${memo}`, now());
+    return i.reply({ content: `❌ <@${i.user.id}> 님이 반려했습니다.\n사유: ${memo}` });
+  }
+}
+
+// ───────────────────────── 본인인증 / KYC ─────────────────────────
+async function startVerify(i) {
+  const u = ensureUser(i.user.id);
+  if (!u.phone_verified) {
+    return i.showModal(
+      new ModalBuilder().setCustomId('verify_phone').setTitle('본인인증 · 휴대폰 번호').addComponents(
+        input('mobile', '휴대폰 번호 (숫자만)', '01012345678', TextInputStyle.Short, 11),
+      ),
+    );
+  }
+  if (u.kyc_status === 'pending') return i.reply({ flags: EPH, content: '⏳ KYC 심사 중입니다. 관리자 확인 후 안내드립니다.' });
+  if (u.kyc_status === 'approved') return i.reply({ flags: EPH, content: '✅ 이미 본인인증 + KYC가 완료된 계정입니다.' });
+  return i.showModal(
+    new ModalBuilder().setCustomId('kyc_submit').setTitle('KYC 인증 · 신원 정보').addComponents(
+      input('name', '실명', '홍길동', TextInputStyle.Short, 30),
+      input('dob', '생년월일 (숫자만, 예: 19900101)', '19900101', TextInputStyle.Short, 8),
+    ),
+  );
 }
 
 // ───────────────────────── 내 정보 / 내역 ─────────────────────────
+const kycStatusKo = { none: '🔲 미제출', pending: '⏳ 심사중', approved: '✅ 승인됨', rejected: '❌ 반려됨' };
 async function showMe(i) {
   const u = ensureUser(i.user.id);
   const embed = new EmbedBuilder()
@@ -284,6 +418,8 @@ async function showMe(i) {
       { name: '보유 포인트', value: `**${pts(u.points)}**`, inline: true },
       { name: '누적 충전', value: krw(u.total_charged), inline: true },
       { name: '누적 사용', value: krw(u.total_spent), inline: true },
+      { name: '휴대폰 인증', value: u.phone_verified ? `✅ ${u.phone_number}` : '🔲 미인증', inline: true },
+      { name: 'KYC 상태', value: kycStatusKo[u.kyc_status] || u.kyc_status, inline: true },
       { name: '가입일', value: fmtTime(u.created_at) },
     );
   return i.reply({ flags: EPH, embeds: [embed] });
@@ -340,10 +476,25 @@ async function closeTicket(i) {
 
 // ───────────────────────── 슬래시 명령 ─────────────────────────
 async function onCommand(i) {
-  if (i.commandName !== 'setup') return;
+  if (!['setup', '관리자'].includes(i.commandName)) return;
   if (!i.memberPermissions.has(PermissionFlagsBits.Administrator)) return i.reply({ flags: EPH, content: '관리자만 사용할 수 있습니다.' });
   const sub = i.options.getSubcommand();
   await i.deferReply({ flags: EPH });
+  if (i.commandName === '관리자') {
+    if (sub === '점검모드') {
+      const on = i.options.getString('상태') === 'on';
+      setSetting('maintenance', on ? '1' : '0');
+      await adminLog({ embeds: [new EmbedBuilder().setColor(on ? 0xe74c3c : 0x2ecc71).setTitle(on ? '🛠️ 점검 모드 시작' : '✅ 점검 모드 해제').setDescription(`<@${i.user.id}> 가 /관리자 명령으로 변경`)] });
+      return i.editReply(on ? '🛠️ 점검 모드를 시작했습니다. 충전/구매가 차단됩니다.' : '✅ 점검 모드를 해제했습니다.');
+    }
+    if (sub === '공지') {
+      const text = i.options.getString('내용');
+      bus.emit('notice', { text });
+      await adminLog({ embeds: [new EmbedBuilder().setColor(COLOR).setTitle('📢 /관리자 공지').setDescription(`<@${i.user.id}>: ${text}`)] });
+      return i.editReply('📢 공지를 전송했습니다.');
+    }
+    return;
+  }
   if (sub === 'panel') {
     await i.channel.send(mainPanelPayload());
     return i.editReply('메인 패널을 설치했습니다.');
@@ -418,17 +569,60 @@ bus.on('deposit_unmatched', (d) =>
 bus.on('sell_new', (s) =>
   adminLog({ embeds: [new EmbedBuilder().setColor(0x9b59b6).setTitle(`📥 매입 신청 #${s.id}`).addFields({ name: '신청자', value: `<@${s.userId}>`, inline: true }, { name: '수량', value: `${s.amount} ${s.coin}`, inline: true }, { name: '입금계좌', value: s.bankInfo })] }, true));
 bus.on('notify_user', ({ userId, content }) => dm(userId, content));
+bus.on('admin_login', ({ id, name, ip }) =>
+  adminLog({ embeds: [new EmbedBuilder().setColor(0x2ecc71).setTitle('🔐 관리자 패널 로그인').setDescription(`**${name}** (<@${id}>) · IP \`${ip}\``)] }));
+bus.on('admin_login_denied', ({ id, name, ip }) =>
+  adminLog({ embeds: [new EmbedBuilder().setColor(0xe74c3c).setTitle('🚨 관리자 패널 접근 거부').setDescription(`허용되지 않은 계정의 로그인 시도\n**${name}** (${id}) · IP \`${ip}\``)] }, true));
+bus.on('kyc_reviewed', ({ discordId, approve, memo, reviewerName, name }) =>
+  adminLog({ embeds: [new EmbedBuilder().setColor(approve ? 0x2ecc71 : 0xe74c3c).setTitle(approve ? '✅ KYC 승인' : '❌ KYC 반려')
+    .setDescription(`<@${discordId}> (${name || ''}) · 처리자: ${reviewerName}${memo ? `\n사유: ${memo}` : ''}`)] }));
+
+// .env 의 PANEL_CHANNEL_ID / STATUS_CHANNEL_ID 채널에 메인 패널/실시간 현황을 한 번만 자동 설치
+// (지정하지 않았다면 건너뜀 — 필요하면 /setup panel, /setup status 명령으로 원하는 채널에 직접 설치)
+async function autoSetup(guild) {
+  if (getSetting('auto_panel_done') !== '1') {
+    const ch = config.panelChannelId ? await guild.channels.fetch(config.panelChannelId).catch(() => null) : null;
+    if (ch) {
+      await ch.send(mainPanelPayload());
+      console.log(`[bot] 자동 설정: 메인 패널 설치 → #${ch.name}`);
+    }
+    setSetting('auto_panel_done', '1');
+  }
+
+  if (getSetting('auto_status_done') !== '1') {
+    const ch = config.statusChannelId ? await guild.channels.fetch(config.statusChannelId).catch(() => null) : null;
+    if (ch) {
+      await setupStatusChannel(client, ch);
+      console.log(`[bot] 자동 설정: 실시간 현황 설치 → #${ch.name} (30초 갱신)`);
+    }
+    setSetting('auto_status_done', '1');
+  }
+
+  if (getSetting('auto_voice_done') !== '1') {
+    await setupVoiceBoard(client, guild);
+    console.log('[bot] 자동 설정: 음성채널 시세판 생성 (6분 갱신)');
+    setSetting('auto_voice_done', '1');
+  }
+}
 
 // ───────────────────────── 시작 ─────────────────────────
 export async function startBot() {
   client.once(Events.ClientReady, async () => {
     console.log(`[bot] 로그인: ${client.user.tag}`);
-    const guild = await client.guilds.fetch(config.guildId);
-    await guild.commands.set(commands);
+    let guild;
+    try {
+      guild = await client.guilds.fetch(config.guildId);
+      await guild.commands.set(commands);
+    } catch (e) {
+      console.error(`[bot] GUILD_ID(${config.guildId}) 조회 실패 — 봇이 해당 서버에 초대되어 있는지, ID가 맞는지 확인하세요:`, e.message);
+      return;
+    }
+    await autoSetup(guild).catch((e) => console.error('[autoSetup]', e.message));
     const loop = (fn, ms) => setInterval(() => fn().catch((e) => console.error('[loop]', e.message)), ms);
     loop(() => refreshStatusMessage(client), 30_000);
     loop(() => refreshVoiceBoard(client), 6 * 60_000);
     loop(() => checkStockAlerts(client), 60_000);
   });
+  client.on('error', (e) => console.error('[bot] client error:', e.message));
   await client.login(config.token);
 }

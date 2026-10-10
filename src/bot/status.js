@@ -63,6 +63,7 @@ export function mainPanelPayload() {
     new ButtonBuilder().setCustomId('sell').setLabel('코인 매입 신청').setEmoji('📥').setStyle(ButtonStyle.Secondary),
   );
   const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('verify').setLabel('본인인증').setEmoji('🛡️').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('me').setLabel('내 정보').setEmoji('👤').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('history').setLabel('내역').setEmoji('🧾').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('calc').setLabel('계산기').setEmoji('🧮').setStyle(ButtonStyle.Secondary),

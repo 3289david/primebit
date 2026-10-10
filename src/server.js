@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { config } from './config.js';
+import { config, BRAND } from './config.js';
 import { makeToken, readToken, getCookie, authorizeUrl, fetchDiscordUser, isAdminUser, SESSION_TTL } from './auth.js';
 import { db, tx, now, DEFAULT_SETTINGS, getSetting, setSetting } from './db.js';
 import { processDeposit, manualMatch, cancelCharge } from './services/charges.js';
@@ -10,6 +11,7 @@ import { executeOrder, refundOrder } from './services/orders.js';
 import { addPoints } from './services/points.js';
 import { getStock, walletReport, explorerUrl, enabledCoins } from './services/wallet.js';
 import { rates, priceOf } from './services/rates.js';
+import { reviewKyc } from './services/verify.js';
 import { COINS } from './config.js';
 import { UserError, bus } from './util.js';
 
@@ -76,9 +78,11 @@ export function startServer() {
       const user = await fetchDiscordUser(String(req.query.code));
       if (!(await isAdminUser(user.id))) {
         console.warn(`[admin] 접근 거부: ${user.username} (${user.id})`);
+        bus.emit('admin_login_denied', { id: user.id, name: user.username, ip: req.ip });
         return loginFail(res, '관리자 권한이 없는 계정입니다.');
       }
       db.prepare('INSERT INTO audit(admin_id,admin_name,action,detail,created_at) VALUES(?,?,?,?,?)').run(user.id, user.username, 'login', req.ip, Date.now());
+      bus.emit('admin_login', { id: user.id, name: user.username, ip: req.ip });
       res.cookie('adm', makeToken({ id: user.id, name: user.username }, SESSION_TTL), { ...cookieOpts, maxAge: SESSION_TTL });
       res.redirect('/admin');
     } catch (e) {
@@ -87,7 +91,8 @@ export function startServer() {
     }
   });
   app.post('/admin/logout', (_req, res) => { res.clearCookie('adm', cookieOpts); res.json({ ok: true }); });
-  app.get('/admin', (_req, res) => res.sendFile(path.join(here, '..', 'admin', 'index.html')));
+  const adminHtmlPath = path.join(here, '..', 'admin', 'index.html');
+  app.get('/admin', (_req, res) => res.type('html').send(fs.readFileSync(adminHtmlPath, 'utf8').replaceAll('{{BRAND}}', BRAND)));
 
   const auth = (req, res, next) => {
     const s = readToken(getCookie(req, 'adm'));
@@ -174,6 +179,9 @@ export function startServer() {
     sells: 'SELECT * FROM sell_requests WHERE (?1=\'\' OR status=?1) ORDER BY id DESC LIMIT 300',
     log: 'SELECT * FROM point_log ORDER BY id DESC LIMIT 300',
     audit: 'SELECT * FROM audit ORDER BY id DESC LIMIT 300',
+    kyc: `SELECT discord_id, phone_verified, phone_number, kyc_status, kyc_name, kyc_dob, kyc_memo, kyc_channel_id,
+            kyc_submitted_at, kyc_reviewed_at, kyc_reviewer FROM users
+          WHERE kyc_status!='none' AND (?1='' OR kyc_status=?1) ORDER BY kyc_submitted_at DESC LIMIT 300`,
   };
   api.get('/list/:t', wrap((req) => {
     const sql = LISTS[req.params.t];
@@ -211,6 +219,11 @@ export function startServer() {
     const s = db.prepare('SELECT * FROM sell_requests WHERE id=?').get(Number(req.params.id));
     if (s && st !== 'open')
       bus.emit('notify_user', { userId: s.discord_id, content: `매입 신청 #${s.id} 이(가) ${st === 'done' ? '완료' : '거절'}되었습니다.${req.body.memo ? `\n사유/메모: ${req.body.memo}` : ''}` });
+  }));
+  api.post('/kyc/:id/approve', wrap((req) => { reviewKyc(req.params.id, true, null, req.admin.name); }));
+  api.post('/kyc/:id/reject', wrap((req) => {
+    if (!String(req.body.memo || '').trim()) throw new UserError('반려 사유를 입력하세요.');
+    reviewKyc(req.params.id, false, req.body.memo, req.admin.name);
   }));
   api.get('/settings', wrap(() => Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map((k) => [k, getSetting(k)]))));
   api.put('/settings', wrap((req) => {

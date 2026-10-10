@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PrimeBIT 관리자</title>
+<title>{{BRAND}} 관리자</title>
 <style>
   :root { --bg:#0f1420; --card:#171e2e; --line:#26304a; --tx:#e6ebf5; --mut:#8c97b2; --pri:#2b6df6; --ok:#2ecc71; --bad:#e74c3c; --warn:#f1c40f; }
   * { box-sizing:border-box }
@@ -36,7 +36,7 @@
 </head>
 <body>
 <div id="login" class="card hide">
-  <h2 style="margin:0">PrimeBIT 관리자</h2>
+  <h2 style="margin:0">{{BRAND}} 관리자</h2>
   <div style="color:var(--mut)">허용된 디스코드 계정으로만 로그인할 수 있습니다.</div>
   <a class="b pri" style="text-decoration:none;text-align:center;padding:10px" href="/admin/login/discord">Discord로 로그인</a>
   <div id="lerr" class="badv"></div>
@@ -44,7 +44,7 @@
 
 <div id="app" class="hide">
   <header>
-    <h1>💱 PrimeBIT 관리자</h1>
+    <h1>💱 {{BRAND}} 관리자</h1>
     <nav id="nav"></nav>
     <span style="margin-left:auto;color:var(--mut)" id="me"></span>
     <button class="b" onclick="logout()">로그아웃</button>
@@ -53,7 +53,7 @@
 </div>
 
 <script>
-const TABS = { dashboard:'대시보드', wallets:'재고/지갑', charges:'충전', deposits:'입금내역', orders:'코인 주문', sells:'매입 신청', users:'유저', log:'포인트 로그', audit:'감사 로그', settings:'설정' };
+const TABS = { dashboard:'대시보드', wallets:'재고/지갑', charges:'충전', deposits:'입금내역', orders:'코인 주문', sells:'매입 신청', kyc:'본인인증/KYC', users:'유저', log:'포인트 로그', audit:'감사 로그', settings:'설정' };
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmtT = (ms) => ms ? new Date(ms).toLocaleString('ko-KR', {hour12:false}) : '';
@@ -184,6 +184,19 @@ async function render() {
         ? `<button class="b pri" onclick="sellDone(${r.id},'done')">완료</button> <button class="b red" onclick="sellDone(${r.id},'rejected')">거절</button>` : '');
     $('#st').value = keep;
   }
+  if (tab === 'kyc') {
+    const keep = stVal();
+    const rows = await api('/list/kyc?status=' + keep);
+    m.innerHTML = '<div class="card" style="margin-bottom:12px">휴대폰 본인인증(문자 발신확인)을 마친 유저가 실명/생년월일 + 증빙자료를 제출하면 여기 표시됩니다. <b>kyc_channel_id</b> 채널에서 신분증 사진을 직접 확인한 뒤 승인/반려하세요.</div>'
+      + statusBar(['', 'pending', 'approved', 'rejected']) + table(
+      [['discord_id','유저',mention],['phone_number','휴대폰',(v,r)=>r.phone_verified?esc(v):'<span class="badv">미인증</span>'],
+       ['kyc_name','실명'],['kyc_dob','생년월일'],['kyc_status','상태',tag],
+       ['kyc_channel_id','증빙 채널',(v)=>v?`<button class="b" onclick="navigator.clipboard.writeText('${esc(v)}').then(()=>this.textContent='복사됨')">채널ID 복사</button>`:''],
+       ['kyc_memo','메모'],['kyc_reviewer','처리자'],['kyc_submitted_at','제출',fmtT],['kyc_reviewed_at','처리',fmtT]],
+      rows, (r) => r.kyc_status === 'pending'
+        ? `<button class="b pri" onclick="act('/kyc/${r.discord_id}/approve')">승인</button> <button class="b red" onclick="kycReject('${r.discord_id}')">반려</button>` : '');
+    $('#st').value = keep;
+  }
   if (tab === 'users') {
     const rows = await api('/list/users');
     m.innerHTML = table(
@@ -220,6 +233,11 @@ async function sellDone(id, status) {
   const memo = prompt(status === 'done' ? '완료 메모 (선택)' : '거절 사유');
   if (memo === null) return;
   await api('/sells/' + id, 'POST', { status, memo }); render();
+}
+async function kycReject(id) {
+  const memo = prompt('반려 사유 (유저에게 DM으로 전달됩니다)');
+  if (!memo) return;
+  await api(`/kyc/${id}/reject`, 'POST', { memo }); render();
 }
 async function adjust(id) {
   const delta = prompt('조정할 포인트 (차감은 음수, 예: -5000)');

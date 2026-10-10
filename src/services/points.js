@@ -26,3 +26,14 @@ export function assertNotBanned(id) {
   if (u.banned) throw new UserError('이용이 제한된 계정입니다. 문의 티켓을 열어주세요.');
   return u;
 }
+
+const kycKo = { none: '미제출', pending: '심사중', rejected: '반려' };
+
+/** 휴대폰 본인인증 + KYC(관리자 승인) 완료된 유저만 충전/구매 가능 */
+export function assertVerified(id) {
+  const u = ensureUser(id);
+  if (!u.phone_verified) throw new UserError('먼저 본인인증이 필요합니다. 메인 패널의 "본인인증" 버튼을 눌러주세요.');
+  if (u.kyc_status !== 'approved')
+    throw new UserError(`KYC 인증이 필요합니다 (현재 상태: ${kycKo[u.kyc_status] || u.kyc_status}). 메인 패널의 "본인인증" 버튼에서 증빙자료를 제출해주세요.`);
+  return u;
+}

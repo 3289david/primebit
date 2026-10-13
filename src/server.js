@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -157,6 +158,13 @@ export function startServer() {
     if (!text) throw new UserError('내용을 입력하세요.');
     bus.emit('notice', { text });
   }));
+
+  // 입금감지 안드로이드 앱 다운로드 (admin 로그인 필요 — 폰 브라우저로 /admin 로그인 후 바로 이 주소 접속)
+  api.get('/deposit-app.apk', (_req, res) => {
+    const apk = path.join(here, '..', 'android/app/build/outputs/apk/debug/app-debug.apk');
+    if (!fs.existsSync(apk)) return res.status(404).json({ error: '빌드된 APK가 없습니다.' });
+    res.download(apk, 'primebit-deposit.apk');
+  });
 
   // CSV 내보내기 (엑셀 한글 깨짐 방지용 BOM)
   api.get('/export/:t.csv', (req, res) => {

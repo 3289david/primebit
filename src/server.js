@@ -1,9 +1,8 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { config, BRAND } from './config.js';
+import { config } from './config.js';
 import { makeToken, readToken, getCookie, authorizeUrl, fetchDiscordUser, isAdminUser, SESSION_TTL } from './auth.js';
 import { db, tx, now, DEFAULT_SETTINGS, getSetting, setSetting } from './db.js';
 import { processDeposit, manualMatch, cancelCharge } from './services/charges.js';
@@ -91,8 +90,7 @@ export function startServer() {
     }
   });
   app.post('/admin/logout', (_req, res) => { res.clearCookie('adm', cookieOpts); res.json({ ok: true }); });
-  const adminHtmlPath = path.join(here, '..', 'admin', 'index.html');
-  app.get('/admin', (_req, res) => res.type('html').send(fs.readFileSync(adminHtmlPath, 'utf8').replaceAll('{{BRAND}}', BRAND)));
+  app.get('/admin', (_req, res) => res.sendFile(path.join(here, '..', 'admin', 'index.html')));
 
   const auth = (req, res, next) => {
     const s = readToken(getCookie(req, 'adm'));

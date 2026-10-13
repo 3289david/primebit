@@ -4,7 +4,7 @@ import {
   MessageFlags, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder, StringSelectMenuBuilder,
   TextInputBuilder, TextInputStyle,
 } from 'discord.js';
-import { config, COINS, CHAINS, COLOR, BRAND, explorerUrl } from '../config.js';
+import { config, COINS, CHAINS, COLOR, explorerUrl } from '../config.js';
 import { db, getSetting, setSetting, numSetting, now } from '../db.js';
 import { ensureUser, assertNotBanned, assertOpen } from '../services/points.js';
 import { createCharge, cancelCharge } from '../services/charges.js';
@@ -24,7 +24,7 @@ export const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const commands = [
   new SlashCommandBuilder()
     .setName('setup')
-    .setDescription(`${BRAND} 설정 (관리자)`)
+    .setDescription('PrimeBIT 설정 (관리자)')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((s) => s.setName('panel').setDescription('현재 채널에 메인 패널 설치'))
     .addSubcommand((s) => s.setName('status').setDescription('현재 채널에 실시간 현황 메시지 설치'))
@@ -577,23 +577,25 @@ bus.on('kyc_reviewed', ({ discordId, approve, memo, reviewerName, name }) =>
   adminLog({ embeds: [new EmbedBuilder().setColor(approve ? 0x2ecc71 : 0xe74c3c).setTitle(approve ? '✅ KYC 승인' : '❌ KYC 반려')
     .setDescription(`<@${discordId}> (${name || ''}) · 처리자: ${reviewerName}${memo ? `\n사유: ${memo}` : ''}`)] }));
 
-// .env 의 PANEL_CHANNEL_ID / STATUS_CHANNEL_ID 채널에 메인 패널/실시간 현황을 한 번만 자동 설치
-// (지정하지 않았다면 건너뜀 — 필요하면 /setup panel, /setup status 명령으로 원하는 채널에 직접 설치)
+// 서버에 이미 있는 채널 이름에 맞춰 메인 패널/실시간 현황/음성 시세판을 한 번만 자동 설치
 async function autoSetup(guild) {
+  const channels = await guild.channels.fetch();
+  const byName = (name) => channels.find((c) => c?.name === name);
+
   if (getSetting('auto_panel_done') !== '1') {
-    const ch = config.panelChannelId ? await guild.channels.fetch(config.panelChannelId).catch(() => null) : null;
+    const ch = byName('이용안내💫');
     if (ch) {
       await ch.send(mainPanelPayload());
-      console.log(`[bot] 자동 설정: 메인 패널 설치 → #${ch.name}`);
+      console.log('[bot] 자동 설정: 메인 패널 설치 → #이용안내');
     }
     setSetting('auto_panel_done', '1');
   }
 
   if (getSetting('auto_status_done') !== '1') {
-    const ch = config.statusChannelId ? await guild.channels.fetch(config.statusChannelId).catch(() => null) : null;
+    const ch = byName('자동송금💳');
     if (ch) {
       await setupStatusChannel(client, ch);
-      console.log(`[bot] 자동 설정: 실시간 현황 설치 → #${ch.name} (30초 갱신)`);
+      console.log('[bot] 자동 설정: 실시간 현황 설치 → #자동송금 (30초 갱신)');
     }
     setSetting('auto_status_done', '1');
   }

@@ -110,6 +110,7 @@ export function startServer() {
   const api = express.Router();
   api.use(auth);
   api.get('/me', (req, res) => res.json({ id: req.admin.id, name: req.admin.name }));
+  api.get('/android-setup', (_req, res) => res.json({ publicUrl: config.publicUrl, deviceSecret: config.deviceSecret }));
   const wrap = (fn) => async (req, res) => {
     try { res.json((await fn(req)) ?? { ok: true }); }
     catch (e) {

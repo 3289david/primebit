@@ -104,7 +104,9 @@ async function render() {
   const m = $('#main');
   if (tab === 'dashboard') {
     const d = await api('/dashboard');
+    const as = await api('/android-setup');
     const c = (k, v, cls='') => `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+    const copyBtn = (t) => `<button class="b" onclick="navigator.clipboard.writeText('${esc(t)}').then(()=>this.textContent='복사됨')">복사</button>`;
     const maxVol = Math.max(1, ...d.week.map((w) => w.vol));
     m.innerHTML = (d.maintenance ? '<div class="card badv" style="margin-bottom:12px">🛠️ 점검 모드 ON — 충전/구매가 차단되어 있습니다.</div>' : '') + `<div class="grid">
       ${c('총 재고 가치', n(d.stockValue) + '원')}${c('판매 중인 코인', d.sellingCoins + '종', d.sellingCoins ? '' : 'badv')}
@@ -122,6 +124,10 @@ async function render() {
         <a class="b" style="text-decoration:none;padding:6px 10px" href="/admin/api/export/orders.csv">주문 CSV</a>
         <a class="b" style="text-decoration:none;padding:6px 10px" href="/admin/api/export/point_log.csv">포인트로그 CSV</a>
         <a class="b" style="text-decoration:none;padding:6px 10px" href="/admin/api/deposit-app.apk">📲 입금감지 앱(APK) 다운로드</a>
+      </div>
+      <div class="card"><div class="k" style="margin-bottom:8px">입금감지 앱 설치값 — 입금 알림을 받는 폰의 브라우저로 이 페이지에 로그인한 뒤, 위 다운로드 버튼으로 APK를 받고 앱에 아래 값을 입력하세요</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span style="color:var(--mut);width:90px">서버 주소</span><code style="user-select:all">${esc(as.publicUrl)}</code>${copyBtn(as.publicUrl)}</div>
+        <div style="display:flex;gap:8px;align-items:center"><span style="color:var(--mut);width:90px">DEVICE_SECRET</span><code style="user-select:all">${esc(as.deviceSecret || '(설정 안 됨)')}</code>${as.deviceSecret ? copyBtn(as.deviceSecret) : ''}</div>
       </div>`;
   }
   if (tab === 'wallets') {
